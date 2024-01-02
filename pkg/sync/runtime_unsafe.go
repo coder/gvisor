@@ -3,16 +3,8 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-//go:build go1.18 && !go1.22
-// +build go1.18,!go1.22
-
-// //go:linkname directives type-checked by checklinkname. Any other
-// non-linkname assumptions outside the Go 1 compatibility guarantee should
-// have an accompanied vet check or version guard build tag.
-
-// Check type definitions and constants when updating Go version.
-//
-// TODO(b/165820485): add these checks to checklinkname.
+// //go:linkname directives type-checked by checklinkname.
+// Runtime type copies checked by checkoffset.
 
 package sync
 
