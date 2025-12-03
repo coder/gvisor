@@ -445,7 +445,7 @@ func (c *TCPConn) CloseWrite() error {
 func (c *TCPConn) LocalAddr() net.Addr {
 	a, err := c.ep.GetLocalAddress()
 	if err != nil {
-		return nil
+		return (*net.TCPAddr)(nil)
 	}
 	return fullToTCPAddr(a)
 }
@@ -454,7 +454,7 @@ func (c *TCPConn) LocalAddr() net.Addr {
 func (c *TCPConn) RemoteAddr() net.Addr {
 	a, err := c.ep.GetRemoteAddress()
 	if err != nil {
-		return nil
+		return (*net.TCPAddr)(nil)
 	}
 	return fullToTCPAddr(a)
 }
