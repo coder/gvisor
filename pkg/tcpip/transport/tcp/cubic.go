@@ -177,7 +177,7 @@ func (c *cubicState) updateSlowStart(packetsAcked int) int {
 	}
 
 	packetsAcked -= newcwnd - c.s.SndCwnd
-	c.s.SndCwnd = newcwnd
+	c.s.SetSndCwnd(newcwnd)
 	if enterCA {
 		c.enterCongestionAvoidance()
 	}
@@ -200,7 +200,7 @@ func (c *cubicState) Update(packetsAcked int, rtt time.Duration) {
 		c.s.rtt.Lock()
 		srtt := c.s.rtt.TCPRTTState.SRTT
 		c.s.rtt.Unlock()
-		c.s.SndCwnd = c.getCwnd(packetsAcked, c.s.SndCwnd, srtt)
+		c.s.SetSndCwnd(c.getCwnd(packetsAcked, c.s.SndCwnd, srtt))
 	}
 }
 
@@ -274,7 +274,7 @@ func (c *cubicState) HandleRTOExpired() {
 	// Reduce the congestion window to 1, i.e., enter slow-start. Per
 	// RFC 5681, page 7, we must use 1 regardless of the value of the
 	// initial congestion window.
-	c.s.SndCwnd = 1
+	c.s.SetSndCwnd(1)
 }
 
 // fastConvergence implements the logic for Fast Convergence algorithm as
