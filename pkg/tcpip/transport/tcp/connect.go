@@ -1063,9 +1063,10 @@ func (e *Endpoint) transitionToStateCloseLocked() {
 }
 
 // tryDeliverSegmentFromClosedEndpoint attempts to deliver the parsed
-// segment to any other endpoint other than the current one. This is called
-// only when the endpoint is in StateClose and we want to deliver the segment
-// to any other listening endpoint. We reply with RST if we cannot find one.
+// segment to any other endpoint other than the current one, or to the
+// protocol's default handler (for example a tcp.Forwarder) if no endpoint
+// matches. This is called only when the endpoint is in StateClose. We reply
+// with RST if neither takes the segment.
 func (e *Endpoint) tryDeliverSegmentFromClosedEndpoint(s *segment) {
 	ep := e.stack.FindTransportEndpoint(e.NetProto, e.TransProto, e.TransportEndpointInfo.ID, s.pkt.NICID)
 	if ep == nil && e.NetProto == header.IPv6ProtocolNumber && e.TransportEndpointInfo.ID.LocalAddress.To4() != (tcpip.Address{}) {
@@ -1078,6 +1079,12 @@ func (e *Endpoint) tryDeliverSegmentFromClosedEndpoint(s *segment) {
 		)
 	}
 	if ep == nil {
+		// Mirror nic.DeliverTransportPacket, which offers a segment that
+		// matches no endpoint to the default handler before replying
+		// with RST.
+		if handler := e.stack.TransportProtocolDefaultHandler(e.TransProto); handler != nil && handler(s.id, s.pkt) {
+			return
+		}
 		if !s.flags.Contains(header.TCPFlagRst) {
 			replyWithReset(e.stack, s, stack.DefaultTOS, tcpip.UseDefaultIPv4TTL, tcpip.UseDefaultIPv6HopLimit)
 		}
