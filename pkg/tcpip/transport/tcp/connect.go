@@ -1063,9 +1063,10 @@ func (e *Endpoint) transitionToStateCloseLocked() {
 }
 
 // tryDeliverSegmentFromClosedEndpoint delivers the parsed segment to another
-// endpoint, or to the protocol's default handler (for example a tcp.Forwarder)
-// if no endpoint matches. It is called when the endpoint is in StateClose or
-// StateError, and replies with RST if neither takes the segment.
+// endpoint that matches it. If no endpoint matches, it calls the protocol's
+// default handler, as nic.DeliverTransportPacket does. If there is no default
+// handler or the handler returns false, it replies to a non-RST segment with
+// RST. It is called when the endpoint is in StateClose or StateError.
 func (e *Endpoint) tryDeliverSegmentFromClosedEndpoint(s *segment) {
 	ep := e.stack.FindTransportEndpoint(e.NetProto, e.TransProto, e.TransportEndpointInfo.ID, s.pkt.NICID)
 	if ep == nil && e.NetProto == header.IPv6ProtocolNumber && e.TransportEndpointInfo.ID.LocalAddress.To4() != (tcpip.Address{}) {
@@ -1078,9 +1079,6 @@ func (e *Endpoint) tryDeliverSegmentFromClosedEndpoint(s *segment) {
 		)
 	}
 	if ep == nil {
-		// Mirror nic.DeliverTransportPacket, which offers a segment that
-		// matches no endpoint to the default handler before replying
-		// with RST.
 		if handler := e.stack.TransportProtocolHandler(e.TransProto); handler != nil && handler(s.id, s.pkt) {
 			return
 		}
@@ -1434,10 +1432,9 @@ func (e *Endpoint) handleTimeWaitSegments() (extendTimeWait bool, reuseTW func()
 				}
 			}
 
-			// No listening endpoint took the SYN. Deliver it the way a closed
-			// endpoint's queued segments are delivered, which offers it to the
-			// default handler (for example a tcp.Forwarder), so it is not
-			// dropped until TIME_WAIT expires.
+			// No listening endpoint matches the SYN. If the stack has a
+			// default handler, redeliver the SYN after this endpoint closes
+			// instead of dropping it until TIME_WAIT expires.
 			if e.stack.TransportProtocolHandler(info.TransProto) != nil {
 				// reuseTW owns s and calls s.DecRef.
 				reuseTW = func() {
