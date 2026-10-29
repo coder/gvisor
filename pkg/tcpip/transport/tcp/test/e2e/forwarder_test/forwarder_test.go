@@ -625,3 +625,87 @@ func TestForwarderTimeWaitDeclinedSYNGetsReset(t *testing.T) {
 		checker.TCPFlags(header.TCPFlagRst|header.TCPFlagAck),
 		checker.TCPAckNum(uint32(newISS)+1)))
 }
+
+// TestForwarderReopenAfterTimeWaitStaleSYN checks that a SYN below the old
+// RcvNxt, queued behind the reopening SYN, does not get the SYN-ACK.
+func TestForwarderReopenAfterTimeWaitStaleSYN(t *testing.T) {
+	c := context.New(t, e2e.DefaultMTU)
+	defer c.Cleanup()
+
+	s := c.Stack()
+	ch := make(chan tcpip.Error, 2)
+	f := tcp.NewForwarder(s, 65536, 10, func(r *tcp.ForwarderRequest) {
+		var err tcpip.Error
+		c.EP, err = r.CreateEndpoint(&c.WQ)
+		ch <- err
+		r.Complete(false)
+	})
+	s.SetTransportProtocolHandler(tcp.ProtocolNumber, f.HandlePacket)
+
+	// Do a 3-way handshake through the forwarder and then close the
+	// resulting endpoint, so it settles into TIME_WAIT.
+	iss := seqnum.Value(context.TestInitialSequenceNumber)
+	c.SendPacket(nil, &context.Headers{
+		SrcPort: context.TestPort,
+		DstPort: context.StackPort,
+		Flags:   header.TCPFlagSyn,
+		SeqNum:  iss,
+		RcvWnd:  30000,
+	})
+	b := c.GetPacket()
+	defer b.Release()
+	c.IRS = seqnum.Value(header.TCP(header.IPv4(b.AsSlice()).Payload()).SequenceNumber())
+	c.SendPacket(nil, &context.Headers{
+		SrcPort: context.TestPort,
+		DstPort: context.StackPort,
+		Flags:   header.TCPFlagAck,
+		SeqNum:  iss + 1,
+		AckNum:  c.IRS + 1,
+	})
+	select {
+	case err := <-ch:
+		if err != nil {
+			t.Fatalf("Error creating endpoint: %s", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Timed out waiting for connection")
+	}
+	c.EP.Close()
+	v := c.GetPacket()
+	defer v.Release()
+	checker.IPv4(t, v, checker.TCP(checker.TCPFlags(header.TCPFlagAck|header.TCPFlagFin)))
+	c.SendPacket(nil, &context.Headers{
+		SrcPort: context.TestPort,
+		DstPort: context.StackPort,
+		Flags:   header.TCPFlagAck | header.TCPFlagFin,
+		SeqNum:  iss + 1,
+		AckNum:  c.IRS + 2,
+	})
+	v = c.GetPacket()
+	defer v.Release()
+	checker.IPv4(t, v, checker.TCP(checker.TCPFlags(header.TCPFlagAck)))
+
+	// Queue the reopening SYN and then a SYN below the old RcvNxt (iss+2)
+	// on the TIME_WAIT endpoint.
+	newISS := iss.Add(3)
+	s.Pause()
+	for _, seq := range []seqnum.Value{newISS, iss} {
+		c.SendPacket(nil, &context.Headers{
+			SrcPort: context.TestPort,
+			DstPort: context.StackPort,
+			Flags:   header.TCPFlagSyn,
+			SeqNum:  seq,
+			RcvWnd:  30000,
+		})
+	}
+	s.Resume()
+
+	b = c.GetPacket()
+	defer b.Release()
+	checker.IPv4(t, b, checker.TCP(
+		checker.SrcPort(context.StackPort),
+		checker.DstPort(context.TestPort),
+		checker.TCPFlags(header.TCPFlagSyn|header.TCPFlagAck),
+		checker.TCPAckNum(uint32(newISS)+1)))
+	c.CheckNoPacketTimeout("unexpected packet after SYN-ACK for the reopening SYN", 500*time.Millisecond)
+}
