@@ -25,6 +25,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/checker"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/seqnum"
+	"gvisor.dev/gvisor/pkg/tcpip/stack"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp/test/e2e"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp/testing/context"
@@ -291,11 +292,9 @@ func TestForwarderReopenAfterTimeWait(t *testing.T) {
 	}
 }
 
-// TestForwarderTimeWaitRejectedGetsReset checks that a segment arriving
-// during TIME_WAIT that the default handler declines to claim (a SYN-ACK,
-// which tcp.Forwarder.HandlePacket rejects rather than a new-connection
-// SYN) is answered with a RST instead of being dropped silently.
-func TestForwarderTimeWaitRejectedGetsReset(t *testing.T) {
+// TestForwarderTimeWaitSynAckKeepsTimeWait checks that a SYN-ACK in TIME_WAIT
+// gets no reply and that TIME_WAIT still answers a FIN retransmit with an ACK.
+func TestForwarderTimeWaitSynAckKeepsTimeWait(t *testing.T) {
 	c := context.New(t, e2e.DefaultMTU)
 	defer c.Cleanup()
 
@@ -373,35 +372,40 @@ func TestForwarderTimeWaitRejectedGetsReset(t *testing.T) {
 		checker.TCPFlags(header.TCPFlagAck)))
 
 	// The 4-tuple is now in TIME_WAIT. A SYN-ACK with a sequence number
-	// higher than anything seen on the old connection still counts as a
-	// "new SYN" for handleTimeWaitSegments's purposes and gets reflected
-	// to the default handler, but tcp.Forwarder.HandlePacket only claims
-	// bare SYNs and returns false for it. The stack must fall back to a
-	// RST for this segment, the same way the normal (non-TIME_WAIT)
-	// delivery path does when the default handler declines a segment,
-	// rather than dropping it without a reply.
+	// higher than anything seen on the old connection counts as a "new SYN"
+	// in handleTimeWaitSegment, but it is not a reopen, so it must be
+	// dropped without a reply rather than redelivered.
 	newISS := iss.Add(3)
-	rejectedAck := c.IRS.Add(100)
 	c.SendPacket(nil, &context.Headers{
 		SrcPort: context.TestPort,
 		DstPort: context.StackPort,
 		Flags:   header.TCPFlagSyn | header.TCPFlagAck,
 		SeqNum:  newISS,
-		AckNum:  rejectedAck,
+		AckNum:  c.IRS.Add(100),
 		RcvWnd:  30000,
 	})
+	c.CheckNoPacketTimeout("unexpected reply to a SYN-ACK in TIME_WAIT", 500*time.Millisecond)
 
+	// TIME_WAIT still holds the 4-tuple: a FIN retransmit gets an ACK.
+	c.SendPacket(nil, &context.Headers{
+		SrcPort: context.TestPort,
+		DstPort: context.StackPort,
+		Flags:   header.TCPFlagAck | header.TCPFlagFin,
+		SeqNum:  iss + 1,
+		AckNum:  c.IRS + 2,
+	})
 	v = c.GetPacket()
 	defer v.Release()
 	checker.IPv4(t, v, checker.TCP(
 		checker.SrcPort(context.StackPort),
 		checker.DstPort(context.TestPort),
-		checker.TCPFlags(header.TCPFlagRst),
-		checker.TCPSeqNum(uint32(rejectedAck))))
+		checker.TCPSeqNum(uint32(c.IRS+2)),
+		checker.TCPAckNum(uint32(iss)+2),
+		checker.TCPFlags(header.TCPFlagAck)))
 
 	select {
 	case err := <-ch:
-		t.Fatalf("forwarder unexpectedly created an endpoint for a rejected SYN-ACK: %s", err)
+		t.Fatalf("forwarder unexpectedly created an endpoint for a SYN-ACK: %s", err)
 	case <-time.After(100 * time.Millisecond):
 	}
 }
@@ -537,4 +541,87 @@ func TestForwarderReopenAfterTimeWaitDuplicateSYN(t *testing.T) {
 		checker.TCPFlags(header.TCPFlagSyn|header.TCPFlagAck),
 		checker.TCPAckNum(uint32(newISS)+1)))
 	c.CheckNoPacketTimeout("unexpected packet after SYN-ACK for the reopening SYN", 500*time.Millisecond)
+}
+
+// TestForwarderTimeWaitDeclinedSYNGetsReset checks that a reopening SYN gets a
+// RST when the default handler returns false for it.
+func TestForwarderTimeWaitDeclinedSYNGetsReset(t *testing.T) {
+	c := context.New(t, e2e.DefaultMTU)
+	defer c.Cleanup()
+
+	s := c.Stack()
+	ch := make(chan tcpip.Error, 1)
+	f := tcp.NewForwarder(s, 65536, 10, func(r *tcp.ForwarderRequest) {
+		var err tcpip.Error
+		c.EP, err = r.CreateEndpoint(&c.WQ)
+		ch <- err
+		r.Complete(false)
+	})
+	var decline atomicbitops.Bool
+	s.SetTransportProtocolHandler(tcp.ProtocolNumber, func(id stack.TransportEndpointID, pkt *stack.PacketBuffer) bool {
+		if decline.Load() {
+			return false
+		}
+		return f.HandlePacket(id, pkt)
+	})
+
+	// Do a 3-way handshake through the forwarder and then close the
+	// resulting endpoint, so it settles into TIME_WAIT.
+	iss := seqnum.Value(context.TestInitialSequenceNumber)
+	c.SendPacket(nil, &context.Headers{
+		SrcPort: context.TestPort,
+		DstPort: context.StackPort,
+		Flags:   header.TCPFlagSyn,
+		SeqNum:  iss,
+		RcvWnd:  30000,
+	})
+	b := c.GetPacket()
+	defer b.Release()
+	c.IRS = seqnum.Value(header.TCP(header.IPv4(b.AsSlice()).Payload()).SequenceNumber())
+	c.SendPacket(nil, &context.Headers{
+		SrcPort: context.TestPort,
+		DstPort: context.StackPort,
+		Flags:   header.TCPFlagAck,
+		SeqNum:  iss + 1,
+		AckNum:  c.IRS + 1,
+	})
+	select {
+	case err := <-ch:
+		if err != nil {
+			t.Fatalf("Error creating endpoint: %s", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Timed out waiting for connection")
+	}
+	c.EP.Close()
+	v := c.GetPacket()
+	defer v.Release()
+	checker.IPv4(t, v, checker.TCP(checker.TCPFlags(header.TCPFlagAck|header.TCPFlagFin)))
+	c.SendPacket(nil, &context.Headers{
+		SrcPort: context.TestPort,
+		DstPort: context.StackPort,
+		Flags:   header.TCPFlagAck | header.TCPFlagFin,
+		SeqNum:  iss + 1,
+		AckNum:  c.IRS + 2,
+	})
+	v = c.GetPacket()
+	defer v.Release()
+	checker.IPv4(t, v, checker.TCP(checker.TCPFlags(header.TCPFlagAck)))
+
+	decline.Store(true)
+	newISS := iss.Add(3)
+	c.SendPacket(nil, &context.Headers{
+		SrcPort: context.TestPort,
+		DstPort: context.StackPort,
+		Flags:   header.TCPFlagSyn,
+		SeqNum:  newISS,
+		RcvWnd:  30000,
+	})
+	v = c.GetPacket()
+	defer v.Release()
+	checker.IPv4(t, v, checker.TCP(
+		checker.SrcPort(context.StackPort),
+		checker.DstPort(context.TestPort),
+		checker.TCPFlags(header.TCPFlagRst|header.TCPFlagAck),
+		checker.TCPAckNum(uint32(newISS)+1)))
 }
