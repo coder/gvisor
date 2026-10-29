@@ -1432,10 +1432,9 @@ func (e *Endpoint) handleTimeWaitSegments() (extendTimeWait bool, reuseTW func()
 				}
 			}
 
-			// No listening endpoint matches the SYN. If it has no ACK and the
-			// stack has a default handler, redeliver it after this endpoint
-			// closes instead of dropping it until TIME_WAIT expires. A SYN-ACK
-			// is dropped, so it cannot end TIME_WAIT.
+			// Redeliver the SYN after this endpoint closes, instead of
+			// dropping it until TIME_WAIT expires. A SYN-ACK is not
+			// redelivered, so it cannot end TIME_WAIT.
 			if !s.flags.Contains(header.TCPFlagAck) && e.stack.TransportProtocolHandler(info.TransProto) != nil {
 				// reuseTW owns s and calls s.DecRef.
 				reuseTW = func() {

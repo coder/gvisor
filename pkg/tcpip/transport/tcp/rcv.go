@@ -568,8 +568,8 @@ func (r *receiver) handleTimeWaitSegment(s *segment) (resetTimeWait bool, newSyn
 	}
 
 	// If it's a SYN and the sequence number is higher than any seen before
-	// for this connection then try and redirect it to a listening endpoint
-	// if available.
+	// for this connection then report it as a new SYN, which can reopen the
+	// connection.
 	//
 	// RFC 1122:
 	//   "When a connection is [...] on TIME-WAIT state [...]
