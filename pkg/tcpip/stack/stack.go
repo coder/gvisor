@@ -517,11 +517,9 @@ func (s *Stack) SetTransportProtocolHandler(p tcpip.TransportProtocolNumber, h f
 	}
 }
 
-// TransportProtocolDefaultHandler returns the per-stack default handler
-// previously set for the given protocol via SetTransportProtocolHandler, or
-// nil if none was set (e.g. a tcp.Forwarder registered as the TCP handler
-// for a stack that has no bound listening endpoints).
-func (s *Stack) TransportProtocolDefaultHandler(p tcpip.TransportProtocolNumber) func(TransportEndpointID, *PacketBuffer) bool {
+// TransportProtocolHandler returns the handler that SetTransportProtocolHandler
+// set for protocol p, or nil if p is not registered or no handler was set.
+func (s *Stack) TransportProtocolHandler(p tcpip.TransportProtocolNumber) func(TransportEndpointID, *PacketBuffer) bool {
 	state := s.transportProtocols[p]
 	if state == nil {
 		return nil

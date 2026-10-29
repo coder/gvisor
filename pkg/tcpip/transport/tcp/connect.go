@@ -1082,7 +1082,7 @@ func (e *Endpoint) tryDeliverSegmentFromClosedEndpoint(s *segment) {
 		// Mirror nic.DeliverTransportPacket, which offers a segment that
 		// matches no endpoint to the default handler before replying
 		// with RST.
-		if handler := e.stack.TransportProtocolDefaultHandler(e.TransProto); handler != nil && handler(s.id, s.pkt) {
+		if handler := e.stack.TransportProtocolHandler(e.TransProto); handler != nil && handler(s.id, s.pkt) {
 			return
 		}
 		if !s.flags.Contains(header.TCPFlagRst) {
@@ -1438,7 +1438,7 @@ func (e *Endpoint) handleTimeWaitSegments() (extendTimeWait bool, reuseTW func()
 			// No listening endpoint took the SYN. Hand it to the default
 			// handler (for example a tcp.Forwarder) so it is not dropped
 			// until TIME_WAIT expires.
-			if e.stack.TransportProtocolDefaultHandler(info.TransProto) != nil {
+			if e.stack.TransportProtocolHandler(info.TransProto) != nil {
 				// reuseTW owns s and calls s.DecRef.
 				reuseTW = func() {
 					e.tryDeliverSegmentFromClosedEndpoint(s)
