@@ -1062,11 +1062,10 @@ func (e *Endpoint) transitionToStateCloseLocked() {
 	e.setEndpointState(StateClose)
 }
 
-// tryDeliverSegmentFromClosedEndpoint attempts to deliver the parsed
-// segment to any other endpoint other than the current one, or to the
-// protocol's default handler (for example a tcp.Forwarder) if no endpoint
-// matches. This is called only when the endpoint is in StateClose. We reply
-// with RST if neither takes the segment.
+// tryDeliverSegmentFromClosedEndpoint delivers the parsed segment to another
+// endpoint, or to the protocol's default handler (for example a tcp.Forwarder)
+// if no endpoint matches. It is called when the endpoint is in StateClose or
+// StateError, and replies with RST if neither takes the segment.
 func (e *Endpoint) tryDeliverSegmentFromClosedEndpoint(s *segment) {
 	ep := e.stack.FindTransportEndpoint(e.NetProto, e.TransProto, e.TransportEndpointInfo.ID, s.pkt.NICID)
 	if ep == nil && e.NetProto == header.IPv6ProtocolNumber && e.TransportEndpointInfo.ID.LocalAddress.To4() != (tcpip.Address{}) {
@@ -1435,9 +1434,10 @@ func (e *Endpoint) handleTimeWaitSegments() (extendTimeWait bool, reuseTW func()
 				}
 			}
 
-			// No listening endpoint took the SYN. Hand it to the default
-			// handler (for example a tcp.Forwarder) so it is not dropped
-			// until TIME_WAIT expires.
+			// No listening endpoint took the SYN. Deliver it the way a closed
+			// endpoint's queued segments are delivered, which offers it to the
+			// default handler (for example a tcp.Forwarder), so it is not
+			// dropped until TIME_WAIT expires.
 			if e.stack.TransportProtocolHandler(info.TransProto) != nil {
 				// reuseTW owns s and calls s.DecRef.
 				reuseTW = func() {
