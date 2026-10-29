@@ -1062,10 +1062,11 @@ func (e *Endpoint) transitionToStateCloseLocked() {
 	e.setEndpointState(StateClose)
 }
 
-// tryDeliverSegmentFromClosedEndpoint attempts to deliver the parsed
-// segment to any other endpoint other than the current one. This is called
-// only when the endpoint is in StateClose and we want to deliver the segment
-// to any other listening endpoint. We reply with RST if we cannot find one.
+// tryDeliverSegmentFromClosedEndpoint delivers the parsed segment to another
+// endpoint that matches it. If no endpoint matches, it calls the protocol's
+// default handler, as nic.DeliverTransportPacket does. If there is no default
+// handler or the handler returns false, it replies to a non-RST segment with
+// RST. It is called when the endpoint is in StateClose or StateError.
 func (e *Endpoint) tryDeliverSegmentFromClosedEndpoint(s *segment) {
 	ep := e.stack.FindTransportEndpoint(e.NetProto, e.TransProto, e.TransportEndpointInfo.ID, s.pkt.NICID)
 	if ep == nil && e.NetProto == header.IPv6ProtocolNumber && e.TransportEndpointInfo.ID.LocalAddress.To4() != (tcpip.Address{}) {
@@ -1078,6 +1079,9 @@ func (e *Endpoint) tryDeliverSegmentFromClosedEndpoint(s *segment) {
 		)
 	}
 	if ep == nil {
+		if handler := e.stack.TransportProtocolHandler(e.TransProto); handler != nil && handler(s.id, s.pkt) {
+			return
+		}
 		if !s.flags.Contains(header.TCPFlagRst) {
 			replyWithReset(e.stack, s, stack.DefaultTOS, tcpip.UseDefaultIPv4TTL, tcpip.UseDefaultIPv6HopLimit)
 		}
@@ -1426,6 +1430,18 @@ func (e *Endpoint) handleTimeWaitSegments() (extendTimeWait bool, reuseTW func()
 						return false, reuseTW
 					}
 				}
+			}
+
+			// Redeliver the SYN after this endpoint closes, instead of
+			// dropping it until TIME_WAIT expires. A SYN-ACK is not
+			// redelivered, so it cannot end TIME_WAIT.
+			if !s.flags.Contains(header.TCPFlagAck) && e.stack.TransportProtocolHandler(info.TransProto) != nil {
+				// reuseTW owns s and calls s.DecRef.
+				reuseTW = func() {
+					e.tryDeliverSegmentFromClosedEndpoint(s)
+					s.DecRef()
+				}
+				return false, reuseTW
 			}
 		}
 		if extTW {
