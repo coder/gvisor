@@ -238,9 +238,12 @@ func handleTimeWait(ep *Endpoint) {
 	if reuseTW != nil {
 		ep.transitionToStateCloseLocked()
 		ep.mu.Unlock()
+		// Deliver the reopening SYN before draining the queue, so a stale
+		// SYN queued behind it cannot reach the listener or default
+		// handler first.
+		reuseTW()
 		ep.drainClosingSegmentQueue()
 		ep.waiterQueue.Notify(waiter.EventHUp | waiter.EventErr | waiter.ReadableEvents | waiter.WritableEvents)
-		reuseTW()
 		return
 	}
 	if extendTimeWait {
